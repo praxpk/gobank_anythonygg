@@ -1,0 +1,2 @@
+# This is a following along coding project. All credits to AnthonyGG https://www.youtube.com/@anthonygg_
+# The code in this repo is based on a JSON API project in this playlist by AnthonyGG https://www.youtube.com/playlist?list=PL0xRBLFXXsP6nudFDqMXzrvQCZrxSOm-2
