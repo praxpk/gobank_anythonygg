@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 
 	"github.com/gorilla/mux"
 )
@@ -44,7 +45,7 @@ func NewAPIServer(listenAddr string, store Storage) *APIServer {
 func (s *APIServer) Run() {
 	router := mux.NewRouter()
 	router.HandleFunc("/account", makeHTTPHandleFunc(s.handleAccount))
-	router.HandleFunc("/account/{id}", makeHTTPHandleFunc(s.handleGetAccount))
+	router.HandleFunc("/account/{id}", makeHTTPHandleFunc(s.handleGetAccountByID))
 
 	log.Println("JSON API server running on port: ", s.listenAddr)
 
@@ -54,7 +55,7 @@ func (s *APIServer) Run() {
 func (s *APIServer) handleAccount(w http.ResponseWriter, r *http.Request) error {
 	switch r.Method {
 	case "GET":
-		return s.handleGetAccount(w, r)
+		return s.handleGetAllAccounts(w, r)
 	case "POST":
 		return s.handleCreateAccount(w, r)
 	case "DELETE":
@@ -64,15 +65,38 @@ func (s *APIServer) handleAccount(w http.ResponseWriter, r *http.Request) error 
 	}
 }
 
-func (s *APIServer) handleGetAccount(w http.ResponseWriter, r *http.Request) error {
-	id := mux.Vars(r)["id"]
-	fmt.Println("id => ", id)
-	WriteJSON(w, http.StatusOK, &Account{})
+func (s *APIServer) handleGetAccountByID(w http.ResponseWriter, r *http.Request) error {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		return fmt.Errorf("id provided is not an integer: %v", err)
+	}
+	account, err := s.store.GetAccountByID(id)
+	if err != nil {
+		return err
+	}
+	WriteJSON(w, http.StatusOK, &account)
+	return nil
+}
+
+func (s *APIServer) handleGetAllAccounts(w http.ResponseWriter, r *http.Request) error {
+	accounts, err := s.store.GetAccounts()
+	if err != nil {
+		return err
+	}
+	WriteJSON(w, http.StatusOK, accounts)
 	return nil
 }
 
 func (s *APIServer) handleCreateAccount(w http.ResponseWriter, r *http.Request) error {
-	return nil
+	createAccountReq := new(CreateAccountRequest)
+	if err := json.NewDecoder(r.Body).Decode(createAccountReq); err != nil {
+		return err
+	}
+	account := NewAccount(createAccountReq.FirstName, createAccountReq.LastName)
+	if err := s.store.CreateAccount(account); err != nil {
+		return err
+	}
+	return WriteJSON(w, http.StatusOK, account)
 }
 
 func (s *APIServer) handleDeleteAccount(w http.ResponseWriter, r *http.Request) error {

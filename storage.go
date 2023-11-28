@@ -14,14 +14,15 @@ type Storage interface {
 	DeleteAccount(int) error
 	UpdateAccount(*Account) error
 	GetAccountByID(int) (*Account, error)
+	GetAccounts() ([]*Account, error)
 }
 
 type Config struct {
 	Host     string `yaml:"host"`
-	Port     int    `yaml:"port,omitempty"`
-	User     string `yaml:"user,omitempty"`
-	Password string `yaml:"password,omitempty"`
-	DBName   string `yaml:"dbName,omitempty"`
+	Port     int    `yaml:"port"`
+	User     string `yaml:"user"`
+	Password string `yaml:"password"`
+	DBName   string `yaml:"dbName"`
 }
 
 type PostgresStore struct {
@@ -72,12 +73,39 @@ func NewPostgresStore() (*PostgresStore, error) {
 	}, nil
 }
 
-func (s *PostgresStore) CreateAccount(*Account) error {
+func (s *PostgresStore) CreateAccount(acc *Account) error {
+	query := "INSERT INTO account (first_name, last_name, number, balance, created_at) VALUES ($1, $2, $3, $4, $5)"
+	result, err := s.db.Query(query,
+		acc.FirstName,
+		acc.LastName,
+		acc.Number,
+		acc.Balance,
+		acc.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("could not create account for %s %s: %v", acc.FirstName, acc.LastName, err)
+	}
+	fmt.Printf("account creation => %v\n", result)
 	return nil
 }
 
 func (s *PostgresStore) GetAccountByID(id int) (*Account, error) {
-	return &Account{}, nil
+	var acc Account
+	query := "SELECT * FROM account WHERE id=$1"
+
+	err := s.db.QueryRow(query, id).Scan(
+		&acc.ID,
+		&acc.FirstName,
+		&acc.LastName,
+		&acc.Number,
+		&acc.Balance,
+		&acc.CreatedAt,
+	)
+	if err != nil {
+		// TODO if record not found send different error to the generic one below
+		return nil, fmt.Errorf("could not get account with id %d: %v", id, err)
+	}
+	return &acc, nil
 }
 func (s *PostgresStore) UpdateAccount(*Account) error {
 	return nil
@@ -88,4 +116,46 @@ func (s *PostgresStore) DeleteAccount(id int) error {
 
 func (s *PostgresStore) CreateAccountTable() error {
 	return nil
+}
+
+func (s *PostgresStore) GetAccounts() ([]*Account, error) {
+	query := "SELECT * FROM account"
+	rows, err := s.db.Query(query)
+	if err != nil {
+		return []*Account{}, fmt.Errorf("could not get accounts from db: %v", err)
+	}
+	var accounts []*Account
+	for rows.Next() {
+		acc := new(Account)
+		err := rows.Scan(
+			&acc.ID,
+			&acc.FirstName,
+			&acc.LastName,
+			&acc.Number,
+			&acc.Balance,
+			&acc.CreatedAt)
+		if err != nil {
+			return []*Account{}, fmt.Errorf("could not parse response from db: %v", err)
+		}
+		accounts = append(accounts, acc)
+	}
+	return accounts, nil
+}
+
+func (s *PostgresStore) Init() error {
+	return s.createAccountTable()
+}
+
+func (s *PostgresStore) createAccountTable() error {
+	query := `CREATE TABLE IF NOT EXISTS account (
+		id serial primary key,
+		first_name varchar(50),
+		last_name varchar(50),
+		number serial,
+		balance numeric,
+		created_at timestamp
+
+	)`
+	_, err := s.db.Exec(query)
+	return err
 }
