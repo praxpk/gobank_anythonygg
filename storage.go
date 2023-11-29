@@ -90,27 +90,31 @@ func (s *PostgresStore) CreateAccount(acc *Account) error {
 }
 
 func (s *PostgresStore) GetAccountByID(id int) (*Account, error) {
-	var acc Account
 	query := "SELECT * FROM account WHERE id=$1"
-
-	err := s.db.QueryRow(query, id).Scan(
-		&acc.ID,
-		&acc.FirstName,
-		&acc.LastName,
-		&acc.Number,
-		&acc.Balance,
-		&acc.CreatedAt,
-	)
+	rows, err := s.db.Query(query, id)
 	if err != nil {
 		// TODO if record not found send different error to the generic one below
 		return nil, fmt.Errorf("could not get account with id %d: %v", id, err)
 	}
-	return &acc, nil
+	rows.Next()
+
+	acc, err := s.scanIntoAccount(rows)
+	if err != nil {
+		// TODO if record not found send different error to the generic one below
+		return nil, fmt.Errorf("could not parse sql result for account with id %d: %v", id, err)
+	}
+
+	return acc, nil
 }
 func (s *PostgresStore) UpdateAccount(*Account) error {
 	return nil
 }
 func (s *PostgresStore) DeleteAccount(id int) error {
+	query := "DELETE FROM account WHERE id=$1"
+	_, err := s.db.Query(query, id)
+	if err != nil {
+		return fmt.Errorf("could not delete account with id %d: %v", id, err)
+	}
 	return nil
 }
 
@@ -126,16 +130,9 @@ func (s *PostgresStore) GetAccounts() ([]*Account, error) {
 	}
 	var accounts []*Account
 	for rows.Next() {
-		acc := new(Account)
-		err := rows.Scan(
-			&acc.ID,
-			&acc.FirstName,
-			&acc.LastName,
-			&acc.Number,
-			&acc.Balance,
-			&acc.CreatedAt)
+		acc, err := s.scanIntoAccount(rows)
 		if err != nil {
-			return []*Account{}, fmt.Errorf("could not parse response from db: %v", err)
+			return nil, err
 		}
 		accounts = append(accounts, acc)
 	}
@@ -158,4 +155,19 @@ func (s *PostgresStore) createAccountTable() error {
 	)`
 	_, err := s.db.Exec(query)
 	return err
+}
+
+func (s *PostgresStore) scanIntoAccount(rows *sql.Rows) (*Account, error) {
+	acc := new(Account)
+	err := rows.Scan(
+		&acc.ID,
+		&acc.FirstName,
+		&acc.LastName,
+		&acc.Number,
+		&acc.Balance,
+		&acc.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("could not parse response from db: %v", err)
+	}
+	return acc, nil
 }
