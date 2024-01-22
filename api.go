@@ -7,9 +7,12 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 
+	"github.com/go-playground/validator"
 	jwt "github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/mux"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type APIServer struct {
@@ -22,6 +25,8 @@ type apiFunc func(http.ResponseWriter, *http.Request) error
 type APIError struct {
 	Error string `json:"error"`
 }
+
+var validate = validator.New()
 
 func makeHTTPHandleFunc(f apiFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -39,8 +44,12 @@ func WriteJSON(w http.ResponseWriter, status int, v any) error {
 
 func withJWTAuth(handlerFunc http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tokenString := r.Header.Get("x-jwt-token")
-		token, err := validateJWT(tokenString)
+		tokenString := r.Header.Get("Authorization")
+		if len(tokenString) < 7 || strings.ToUpper(tokenString[:7]) != "BEARER "{
+			WriteJSON(w, http.StatusForbidden, APIError{Error: "invalid token"})
+			return
+		}
+		token, err := validateJWT(tokenString[7:])
 		if err != nil || !token.Valid {
 			WriteJSON(w, http.StatusForbidden, APIError{Error: "invalid token"})
 			return
@@ -54,7 +63,7 @@ func withJWTAuth(handlerFunc http.HandlerFunc) http.HandlerFunc {
 func createJWT(account *Account) (string, error) {
 	claims := &jwt.MapClaims{
 		"expiresAt":     15000,
-		"accountNumber": account.Number,
+		"accountId": account.ID,
 	}
 
 	secret := os.Getenv("JWT_SECRET")
@@ -73,6 +82,11 @@ func validateJWT(tokenString string) (*jwt.Token, error) {
 	})
 }
 
+func validatePassword(password, hashedPassword string) bool {
+	err := bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
+	return err == nil
+}
+
 func NewAPIServer(listenAddr string, store Storage) *APIServer {
 	return &APIServer{
 		listenAddr: listenAddr,
@@ -80,15 +94,30 @@ func NewAPIServer(listenAddr string, store Storage) *APIServer {
 	}
 }
 
-func (s *APIServer) Run() {
-	router := mux.NewRouter()
-	router.HandleFunc("/account", makeHTTPHandleFunc(s.handleAccount))
-	router.HandleFunc("/account/{id}", withJWTAuth(makeHTTPHandleFunc(s.handleAccountByID)))
-	router.HandleFunc("/transfer", makeHTTPHandleFunc(s.handleTransfer))
-
-	log.Println("JSON API server running on port: ", s.listenAddr)
-
-	http.ListenAndServe(s.listenAddr, router)
+func (s *APIServer) handleLogin(w http.ResponseWriter, r *http.Request) error {
+	if r.Method != "POST"{
+		return fmt.Errorf("method not allowed: %s", r.Method)
+	}
+	var req LoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return err
+	}
+	if err := validate.Struct(req); err != nil{
+		return fmt.Errorf("invalid login request format")
+	}
+	acc, err := s.store.GetAccountByEmail(req.Email)
+	if err!= nil {
+		return fmt.Errorf("account does not exist")
+	}
+	if !validatePassword(req.Password, acc.EncryptedPassword) {
+		return fmt.Errorf("incorrect password")
+	}
+	token, err := createJWT(acc)
+	if err!= nil{
+		return fmt.Errorf("server error")
+	}
+	w.Header().Set("Authorization", "Bearer "+token)
+	return WriteJSON(w, http.StatusOK, req)
 }
 
 func (s *APIServer) handleAccount(w http.ResponseWriter, r *http.Request) error {
@@ -143,22 +172,24 @@ func (s *APIServer) handleCreateAccount(w http.ResponseWriter, r *http.Request) 
 	if err := json.NewDecoder(r.Body).Decode(createAccountReq); err != nil {
 		return err
 	}
-	account := NewAccount(createAccountReq.FirstName, createAccountReq.LastName)
-	if err := s.store.CreateAccount(account); err != nil {
-		return err
+	if err := validate.Struct(createAccountReq); err != nil{
+		return fmt.Errorf("invalid request format")
 	}
-	token, err := createJWT(account)
+	existingAccount, _ := s.store.GetAccountByEmail(createAccountReq.Email)  
+
+	if existingAccount != nil {
+		return fmt.Errorf("account with email address %s already exists", createAccountReq.Email)
+	}
+
+	account, err := NewAccount(createAccountReq.FirstName, createAccountReq.LastName, createAccountReq.Email, createAccountReq.Password)
 	if err != nil {
 		return err
 	}
-	responseStruct := struct {
-		Token   string
-		Account Account
-	}{
-		Token:   token,
-		Account: *account,
+
+	if err := s.store.CreateAccount(account); err != nil {
+		return err
 	}
-	return WriteJSON(w, http.StatusOK, responseStruct)
+	return WriteJSON(w, http.StatusOK, account)
 }
 
 func (s *APIServer) handleTransfer(w http.ResponseWriter, r *http.Request) error {
@@ -178,4 +209,16 @@ func (s *APIServer) getIDFromRequest(r *http.Request) (int, error) {
 		return 0, fmt.Errorf("id %s provided is not an integer: %v", idStr, err)
 	}
 	return id, nil
+}
+
+func (s *APIServer) Run() {
+	router := mux.NewRouter()
+	router.HandleFunc("/account", makeHTTPHandleFunc(s.handleAccount))
+	router.HandleFunc("/account/{id}", withJWTAuth(makeHTTPHandleFunc(s.handleAccountByID)))
+	router.HandleFunc("/transfer", makeHTTPHandleFunc(s.handleTransfer))
+	router.HandleFunc("/login", makeHTTPHandleFunc(s.handleLogin))
+
+	log.Println("JSON API server running on port: ", s.listenAddr)
+
+	http.ListenAndServe(s.listenAddr, router)
 }

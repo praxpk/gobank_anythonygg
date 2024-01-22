@@ -14,6 +14,7 @@ type Storage interface {
 	DeleteAccount(int) error
 	UpdateAccount(*Account) error
 	GetAccountByID(int) (*Account, error)
+	GetAccountByEmail(string) (*Account, error)
 	GetAccounts() ([]*Account, error)
 }
 
@@ -23,6 +24,7 @@ type Config struct {
 	User     string `yaml:"user"`
 	Password string `yaml:"password"`
 	DBName   string `yaml:"dbName"`
+	Schema 	 string `yaml:"schema"`
 }
 
 type PostgresStore struct {
@@ -55,12 +57,13 @@ func NewPostgresStore() (*PostgresStore, error) {
 
 	// connect to db server
 	psqlInfo := fmt.Sprintf("host=%s port=%d user=%s "+
-		"password=%s dbname=%s sslmode=disable",
+		"password=%s dbname=%s search_path =%s sslmode=disable",
 		postgresConfig.Host,
 		postgresConfig.Port,
 		postgresConfig.User,
 		postgresConfig.Password,
-		postgresConfig.DBName)
+		postgresConfig.DBName,
+		postgresConfig.Schema)
 	db, err := sql.Open("postgres", psqlInfo)
 	if err != nil {
 		return nil, fmt.Errorf("error creating postgres db: %v\n", err)
@@ -74,11 +77,13 @@ func NewPostgresStore() (*PostgresStore, error) {
 }
 
 func (s *PostgresStore) CreateAccount(acc *Account) error {
-	query := "INSERT INTO account (first_name, last_name, number, balance, created_at) VALUES ($1, $2, $3, $4, $5)"
-	result, err := s.db.Query(query,
+	query := "INSERT INTO account (first_name, last_name, email, encrypted_password, balance, created_at) VALUES ($1, $2, $3, $4, $5, $6)"
+	stmt, err := s.db.Prepare(query)
+	result, err := stmt.Exec(
 		acc.FirstName,
 		acc.LastName,
-		acc.Number,
+		acc.Email,
+		acc.EncryptedPassword,
 		acc.Balance,
 		acc.CreatedAt,
 	)
@@ -106,9 +111,11 @@ func (s *PostgresStore) GetAccountByID(id int) (*Account, error) {
 
 	return acc, nil
 }
+
 func (s *PostgresStore) UpdateAccount(*Account) error {
 	return nil
 }
+
 func (s *PostgresStore) DeleteAccount(id int) error {
 	query := "DELETE FROM account WHERE id=$1"
 	_, err := s.db.Query(query, id)
@@ -148,10 +155,10 @@ func (s *PostgresStore) createAccountTable() error {
 		id serial primary key,
 		first_name varchar(50),
 		last_name varchar(50),
-		number serial,
+		email varchar(50),
+		encrypted_password text,
 		balance numeric,
 		created_at timestamp
-
 	)`
 	_, err := s.db.Exec(query)
 	return err
@@ -163,11 +170,30 @@ func (s *PostgresStore) scanIntoAccount(rows *sql.Rows) (*Account, error) {
 		&acc.ID,
 		&acc.FirstName,
 		&acc.LastName,
-		&acc.Number,
+		&acc.Email,
+		&acc.EncryptedPassword,
 		&acc.Balance,
 		&acc.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("could not parse response from db: %v", err)
 	}
+	return acc, nil
+}
+
+func (s *PostgresStore) GetAccountByEmail(email string) (*Account, error) {
+	query := "SELECT * FROM account WHERE email=$1"
+	rows, err := s.db.Query(query, email)
+	if err != nil {
+		// TODO if record not found send different error to the generic one below
+		return nil, fmt.Errorf("could not get account with email %s: %v", email, err)
+	}
+	rows.Next()
+
+	acc, err := s.scanIntoAccount(rows)
+	if err != nil {
+		// TODO if record not found send different error to the generic one below
+		return nil, fmt.Errorf("could not parse sql result for account with email %s: %v", email, err)
+	}
+
 	return acc, nil
 }
